@@ -1,0 +1,191 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+#import wine train and wine types as Wine.Train and Wine.Types ands then execute below code
+```{r}
+library(dplyr)
+library(caret)
+library(e1071)
+library(nnet)
+
+library(readr)
+Wine.Train <- read_csv("data/Wine Train.csv")
+library(readxl)
+Wine.Types <- read_excel("data/Wine Types And Locations.xlsx")
+View(Wine_Types_And_Locations)
+
+wine_combined <- merge(Wine.Train, Wine.Types[, c("ID", "type", "location")], by = "ID", all.x = TRUE)
+```
+
+```{r}
+wine.full <- wine_combined[, colSums(!is.na(wine_combined)) > 0]
+
+```
+
+
+```{r}
+wine.full[wine.full == ""] <- NA
+wine.new <- na.omit(wine.full)
+
+```
+
+```{r}
+str(wine.new)
+```
+
+```{r}
+wine_data <- wine.new[, -which(names(wine.new) == "ID")]
+
+```
+
+```{r}
+library(dplyr)
+library(caret)
+wine_data$type <- toupper(substr(wine_data$type, 1, 1))
+wine_data$type[wine_data$type == "R"] <- "R"
+wine_data$type[wine_data$type == "W"] <- "W"
+
+wine_data$location <- toupper(substr(wine_data$location, 1, 1))
+wine_data$location[wine_data$location == "T"] <- "TX"
+wine_data$location[wine_data$location == "C"] <- "CA"
+```
+```{r}
+wine_data <- wine_data %>%
+  mutate(
+    type = ifelse(tolower(substr(type, 1, 1)) == "r", "R", "W"),
+    location = ifelse(tolower(substr(location, 1, 1)) == "c", "CA", "TX")
+  ) 
+```
+
+```{r}
+wine_data <- wine_data[, !names(wine_data) %in% c("free.sulfur.dioxide", "total.sulfur.dioxide")]
+```
+
+
+```{r}
+wine_data$quality <- as.factor(wine_data$quality)
+is.factor(wine_data$quality) #shoul dbe true
+
+
+```
+
+```{r}
+str(wine_data)
+```
+
+
+```{r}
+
+set.seed(123)
+
+wine_data <- wine_data %>% 
+  mutate_if(is.character, as.factor)
+
+wine_data$quality_num <- as.numeric(as.character(wine_data$quality))
+
+full_features <- setdiff(names(wine_data), c("quality", "quality_num"))
+reduced_features <- setdiff(full_features, c("chlorides","sulphates"))
+feature_sets <- list(full = full_features, reduced = reduced_features)
+
+num_seeds <- 500
+
+run_models <- function(seed, data, features) {
+  set.seed(seed)
+  train_idx <- sample(seq_len(nrow(data)), size = 0.7*nrow(data))
+  train_data <- data[train_idx, ]
+  test_data  <- data[-train_idx, ]
+  
+  train_data$quality <- droplevels(train_data$quality)
+  test_data$quality <- factor(test_data$quality, levels = levels(train_data$quality))
+  
+  # logistic model
+  logit_model <- multinom(quality ~ ., data = train_data[, c("quality", features)], trace = FALSE)
+  pred_class <- predict(logit_model, newdata = test_data)
+  mae_logit <- mean(abs(test_data$quality_num - as.numeric(as.character(pred_class))))
+  
+  # linear model
+  lm_model <- lm(quality_num ~ ., data = train_data[, c("quality_num", features)])
+  pred_lm <- predict(lm_model, newdata = test_data)
+  mae_lm <- mean(abs(test_data$quality_num - pred_lm))
+  
+  c(Logit_MAE = mae_logit, Linear_MAE = mae_lm)
+}
+
+results_list <- list()
+
+for (feat_name in names(feature_sets)) {
+  feat_set <- feature_sets[[feat_name]]
+  
+  res <- t(sapply(1:num_seeds, run_models, data = wine_data, features = feat_set))
+  metrics_df <- data.frame(Seed = 1:num_seeds, res)
+  
+  best_logit <- metrics_df[which.min(metrics_df$Logit_MAE), ]
+  best_linear <- metrics_df[which.min(metrics_df$Linear_MAE), ]
+  
+  cat("\n--- Feature Set:", feat_name, "---\n")
+  cat("\nBest Logistic MAE:\n"); print(best_logit)
+  cat("\nBest Linear MAE:\n"); print(best_linear)
+  
+  results_list[[feat_name]] <- metrics_df
+}
+
+```
+
+
+```{r}
+
+set.seed(406)
+train_idx <- sample(seq_len(nrow(wine_data)), size = 0.7*nrow(wine_data))
+train_data <- wine_data[train_idx, ]
+test_data  <- wine_data[-train_idx, ]
+
+train_data$quality <- droplevels(train_data$quality)
+test_data$quality <- factor(droplevels(test_data$quality), levels = levels(train_data$quality))
+
+full_features <- setdiff(names(train_data), c("quality", "quality_num"))
+
+logit_model <- multinom(quality ~ ., data = train_data[, c("quality", full_features)], trace = FALSE)
+coef_matrix <- coef(logit_model)
+importance <- apply(coef_matrix, 2, function(x) mean(abs(x)))[-1]  # exclude intercept
+imp_ordered <- sort(importance, decreasing = TRUE)
+top5_vars <- names(head(imp_ordered, 5))
+cat("\nTop 5 important variables:\n"); print(top5_vars)
+
+#sample
+full_input <- data.frame(
+  fixed.acidity = 7.0,
+  volatile.acidity = 0.3,
+  citric.acid = 0.3,
+  residual.sugar = 4.0,
+  chlorides = 0.045,
+  density = 0.995,
+  pH = 3.2,
+  sulphates = 0.595,
+  alcohol = 10.5,
+  type = factor("W", levels = levels(train_data$type)),
+  location = factor("TX", levels = levels(train_data$location))
+)
+
+pred_probs <- predict(logit_model, newdata = full_input, type = "probs")
+pred_class <- predict(logit_model, newdata = full_input, type = "class")
+
+cat("\nPredicted class probabilities:\n"); print(pred_probs)
+cat("Predicted class (quality level):\n"); print(pred_class)
+cat("Predicted quality (numeric):\n"); print(as.numeric(as.character(pred_class)))
+
+```
+
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
