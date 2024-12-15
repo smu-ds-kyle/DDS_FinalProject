@@ -16,4 +16,4 @@ In the predictions folders, you will find predictions from our linear model and 
 
 ## Shiny App
 
-Please find the Shiny app for this project [here]().
+Please find the Shiny app for this project [here](https://rxjhno-ekam-brar.shinyapps.io/winedata/).
